@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lueur</title>
+<meta name="description" content="Un fil de bonnes nouvelles du monde entier, mis à jour chaque matin.">
+<meta name="theme-color" content="#0d0f0e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Lueur">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Figtree:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="styles.css">
+<style>
+html,body{margin:0}
+.photo{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .5s}
+.photo.ok{opacity:1}
+.card.has-photo .glyph{display:none}
+.card.has-photo .scrim{background:linear-gradient(180deg,rgba(0,0,0,.35) 0%,rgba(0,0,0,0) 22%,rgba(0,0,0,0) 34%,rgba(0,0,0,.7) 60%,rgba(0,0,0,.94) 100%)}
+.meta{flex-wrap:wrap;row-gap:4px}
+.meta span{white-space:nowrap}
+.lang{border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-size:10px;color:var(--paper)}
+.card h2.daily{font-size:clamp(23px,6.6vw,29px)}
+a.more{text-decoration:none}
+.status{font-size:12px;color:var(--mute)}
+.status b{color:var(--glow);font-weight:600}
+.end .btns{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+.btn.ghost{background:none;color:var(--paper);border:1px solid var(--line)}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <header class="top">
+    <div class="brand">
+      <div class="logo"><i></i>Lueur</div>
+      <div class="date" id="today"></div>
+    </div>
+    <nav class="chips" id="chips" aria-label="Catégories"></nav>
+  </header>
+  <div class="progress" id="progress"></div>
+  <main class="feed" id="feed" aria-live="polite"></main>
+  <div class="sheet-bg" id="sheetBg"></div>
+  <section class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+    <div class="grab"></div>
+    <button class="close" id="sheetClose" aria-label="Fermer">×</button>
+    <div class="meta" id="sheetMeta"></div>
+    <h3 id="sheetTitle"></h3>
+    <div id="sheetBody"></div>
+    <div class="src" id="sheetSrc"></div>
+  </section>
+  <div class="toast" id="toast"></div>
+</div>
+
+<script src="essentiels.js"></script>
+<script>
+const CATS = window.CATS, G = window.GLYPHS;
+CATS.societe = {label:"Société", c0:"#0c1218", c1:"#4f7593", c2:"#bfe0f5", scene:"fireflies"};
+const DEFAULT_GLYPH = {animaux:"cat",nature:"tree",ocean:"wave",ia:"protein",sante:"cell",energie:"solar",societe:"hands"};
+
+/* ---------- données ---------- */
+const ESS = window.ESSENTIELS.map((n,i)=>({...n, id:"e"+i, kind:"essentiel"}));
+let DAILY = [], UPDATED = null;
+const byId = new Map(ESS.map(n=>[n.id,n]));
+
+const store = {
+  get(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch(e){return d}},
+  set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
+};
+let liked = new Set(store.get("lueur-liked2",[]));
+let savedItems = store.get("lueur-saved-items",{});   // on garde l'article entier : il peut disparaître du fil du jour
+let filter = "jour";
+
+const $ = s => document.querySelector(s);
+const feed = $("#feed");
+const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const escH = s => String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const safeUrl = u => /^https?:\/\//.test(u||"") ? u : "#";
+
+function ago(iso){
+  const d = (Date.now()-Date.parse(iso))/36e5;
+  if(isNaN(d)) return "";
+  if(d<1) return "à l'instant";
+  if(d<24) return `il y a ${Math.round(d)} h`;
+  if(d<48) return "hier";
+  return `il y a ${Math.floor(d/24)} j`;
+}
+
+async function loadDaily(){
+  try{
+    const r = await fetch("news.json?t="+Date.now(), {cache:"no-store"});
+    if(!r.ok) throw 0;
+    const j = await r.json();
+    DAILY = (j.items||[]).filter(i=>i.title&&i.url).map(i=>({...i, cat: CATS[i.cat]?i.cat:"societe", kind:"daily"}));
+    UPDATED = j.updated;
+    DAILY.forEach(i=>byId.set(i.id,i));
+  }catch(e){ DAILY = []; }
+  Object.values(savedItems).forEach(i=>{ if(!byId.has(i.id)) byId.set(i.id,i) });
+  setStatus(); render();
+}
+function setStatus(){
+  const d = UPDATED ? new Date(UPDATED) : new Date();
+  $("#today").textContent = d.toLocaleDateString("fr-FR",{weekday:"short",day:"numeric",month:"long"});
+}
+
+/* ---------- filtres ---------- */
+const chipDefs = [["jour","Aujourd'hui"],...Object.entries(CATS).map(([k,v])=>[k,v.label]),["essentiels","Essentiels"],["saved","Enregistrés"]];
+$("#chips").innerHTML = chipDefs.map(([k,l])=>`<button class="chip" id="chip-${k}" data-k="${k}" aria-pressed="${k===filter}">${l}</button>`).join("");
+$("#chips").addEventListener("click",e=>{
+  const b=e.target.closest(".chip"); if(!b) return; setFilter(b.dataset.k);
+});
+function setFilter(k){
+  filter=k;
+  document.querySelectorAll(".chip").forEach(c=>c.setAttribute("aria-pressed",c.dataset.k===k));
+  document.getElementById("chip-"+k)?.scrollIntoView({inline:"center",block:"nearest",behavior:reduce?"auto":"smooth"});
+  render(); feed.scrollTop=0;
+}
+function mix(a){ // alterne les thèmes pour que le fil reste varié
+  const by={}; a.forEach(i=>(by[i.cat]=by[i.cat]||[]).push(i));
+  const out=[]; let left=true;
+  while(left){ left=false; for(const k in by){ const x=by[k].shift(); if(x){out.push(x);left=true} } }
+  return out;
+}
+function list(){
+  if(filter==="jour") return DAILY.length ? mix(DAILY) : ESS;
+  if(filter==="essentiels") return ESS;
+  if(filter==="saved") return Object.values(savedItems).sort((a,b)=>(b.savedAt||0)-(a.savedAt||0));
+  return [...DAILY.filter(n=>n.cat===filter), ...ESS.filter(n=>n.cat===filter)];
+}
+
+/* ---------- icônes ---------- */
+const IC = {
+  heart:'<svg viewBox="0 0 24 24"><path d="M12 20s-7-4.4-9.2-9C1.4 8 3.3 4.5 6.7 4.5c2 0 3.5 1.1 4.3 2.6.8-1.5 2.3-2.6 4.3-2.6 3.4 0 5.3 3.5 3.9 6.5C19 15.6 12 20 12 20Z" stroke-linejoin="round"/></svg>',
+  save:'<svg viewBox="0 0 24 24"><path d="M6 3.5h12v17l-6-4-6 4Z" stroke-linejoin="round"/></svg>',
+  share:'<svg viewBox="0 0 24 24"><path d="M20 4 9.5 14.5M20 4l-6.5 16-4-5.5L4 10.5Z" stroke-linejoin="round"/></svg>'
+};
+const pin='<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 21s-7-6.3-7-11.5a7 7 0 0 1 14 0C19 14.7 12 21 12 21Z"/><circle cx="12" cy="9.5" r="2.4"/></svg>';
+
+/* ---------- rendu ---------- */
+function cardBody(n,c){
+  if(n.kind==="daily") return `
+    <div class="meta"><span class="tag">${c.label}</span><span>·</span><span>${escH(n.source)}</span><span>·</span><span>${ago(n.date)}</span>${n.original?`<span class="lang" title="Traduit automatiquement depuis l'anglais">Traduit</span>`:n.lang&&n.lang!=="fr"?`<span class="lang">${escH(n.lang.toUpperCase())}</span>`:""}</div>
+    <h2 class="daily">${escH(n.title)}</h2>
+    ${n.summary?`<p>${escH(n.summary)}</p>`:""}
+    <a class="more" href="${escH(safeUrl(n.url))}" target="_blank" rel="noopener">Lire l'article sur ${escH(n.source)}</a>`;
+  return `
+    <div class="meta"><span class="tag">${c.label}</span><span>·</span><span class="where">${pin}${n.where}</span><span>·</span><span>${n.date}</span></div>
+    <div class="fig">${n.fig}<small>${n.figl}</small></div>
+    <h2>${n.title}</h2>
+    <p>${n.lead}</p>
+    <button class="more" data-act="read">Lire la suite</button>`;
+}
+function render(){
+  stopAll();
+  const items=list();
+  let html = items.map((n,i)=>{
+    const c=CATS[n.cat]||CATS.societe, id=n.id, sv=!!savedItems[id];
+    const photo = n.kind==="daily" && /^https:\/\//.test(n.image||"");
+    return `<article class="card ${photo?"has-photo":""}" data-id="${escH(id)}" data-i="${i}" style="--c0:${c.c0};--c1:${c.c1};--c2:${c.c2}">
+      <canvas></canvas>
+      ${photo?`<img class="photo" alt="" loading="${i<2?"eager":"lazy"}" referrerpolicy="no-referrer" src="${escH(n.image)}">`:""}
+      <div class="glyph" aria-hidden="true">${G[n.g||DEFAULT_GLYPH[n.cat]]||""}</div>
+      <div class="scrim"></div>
+      <div class="burst" aria-hidden="true">${IC.heart}</div>
+      <div class="body">${cardBody(n,c)}</div>
+      <div class="rail">
+        <button class="act like ${liked.has(id)?"on":""}" data-act="like" aria-label="J'aime" aria-pressed="${liked.has(id)}">${IC.heart}<span>J'aime</span></button>
+        <button class="act save ${sv?"on":""}" data-act="save" aria-label="Enregistrer" aria-pressed="${sv}">${IC.save}<span>Garder</span></button>
+        <button class="act" data-act="share" aria-label="Partager">${IC.share}<span>Partager</span></button>
+      </div>
+      ${i===0?'<div class="hint">Glisse vers le haut</div>':''}
+    </article>`;
+  }).join("");
+  const empty = items.length===0;
+  const daily = filter==="jour" && DAILY.length;
+  html += `<article class="card end"><div class="inner">
+      <div class="sun"></div>
+      <h2>${empty?"Rien ici pour l'instant":"Tu es à jour"}</h2>
+      <p>${empty ? (filter==="saved"?"Appuie sur « Garder » sous une info pour la retrouver ici.":"Pas d'info de ce thème aujourd'hui.")
+        : daily ? `Tu as vu les ${items.length} bonnes nouvelles du jour. Les prochaines arrivent demain matin.` : "Tu as tout vu. Reviens demain pour de nouvelles infos."}</p>
+      <div class="btns">
+        ${filter!=="essentiels"?'<button class="btn" data-act="ess">Voir les essentiels</button>':''}
+        ${empty?'':'<button class="btn ghost" data-act="top">Revenir en haut</button>'}
+      </div>
+    </div></article>`;
+  feed.innerHTML=html;
+  feed.querySelectorAll(".photo").forEach(img=>{
+    const card=img.closest(".card");
+    const ok=()=>img.classList.add("ok"), bad=()=>{img.remove();card.classList.remove("has-photo");if(io)start(card)};
+    if(img.complete && img.naturalWidth) ok(); else { img.addEventListener("load",ok,{once:true}); img.addEventListener("error",bad,{once:true}); }
+  });
+  feed.querySelectorAll(".card:not(.end)").forEach(observe);
+  updateProgress(0);
+}
+
+/* ---------- interactions ---------- */
+feed.addEventListener("click",e=>{
+  const b=e.target.closest("[data-act]"); if(!b) return;
+  const card=b.closest(".card"); const id=card.dataset.id; const act=b.dataset.act; const n=byId.get(id);
+  if(act==="like"){ toggleLike(id,b) }
+  if(act==="save"){ toggleSave(n,b) }
+  if(act==="share") share(n);
+  if(act==="read") openSheet(n);
+  if(act==="top") feed.scrollTo({top:0,behavior:reduce?"auto":"smooth"});
+  if(act==="ess") setFilter("essentiels");
+});
+let lastTap=0;
+feed.addEventListener("pointerup",e=>{
+  if(e.target.closest("button,a")) return;
+  const card=e.target.closest(".card:not(.end)"); if(!card) return;
+  const now=Date.now();
+  if(now-lastTap<300){
+    const id=card.dataset.id;
+    if(!liked.has(id)) toggleLike(id,card.querySelector(".like"));
+    const bu=card.querySelector(".burst"); bu.classList.remove("go"); void bu.offsetWidth; bu.classList.add("go");
+    lastTap=0;
+  } else lastTap=now;
+});
+function toggleLike(id,b){
+  liked.has(id)?liked.delete(id):liked.add(id); store.set("lueur-liked2",[...liked]);
+  b.classList.toggle("on",liked.has(id)); b.setAttribute("aria-pressed",liked.has(id));
+}
+function toggleSave(n,b){
+  if(savedItems[n.id]) delete savedItems[n.id]; else savedItems[n.id]={...n,savedAt:Date.now()};
+  store.set("lueur-saved-items",savedItems);
+  const on=!!savedItems[n.id]; b.classList.toggle("on",on); b.setAttribute("aria-pressed",on);
+  toast(on?"Enregistré":"Retiré des enregistrés");
+}
+async function share(n){
+  const text = n.kind==="daily" ? n.title : `${n.title} — ${n.lead}`;
+  if(navigator.share){ try{ await navigator.share({title:n.title,text,url:n.url}); return }catch(e){ if(e.name==="AbortError") return } }
+  try{ await navigator.clipboard.writeText(`${text} ${n.url}`); toast("Lien copié, prêt à partager") }catch(e){ toast("Partage impossible ici") }
+}
+let tt; function toast(m){const t=$("#toast");t.textContent=m;t.classList.add("show");clearTimeout(tt);tt=setTimeout(()=>t.classList.remove("show"),1600)}
+
+/* ---------- feuille (essentiels) ---------- */
+function openSheet(n){
+  const c=CATS[n.cat];
+  $("#sheetMeta").innerHTML=`<span class="tag" style="color:${c.c2}">${c.label}</span><span>·</span><span>${n.where}</span><span>·</span><span>${n.date}</span>`;
+  $("#sheetTitle").textContent=n.title;
+  $("#sheetBody").innerHTML=n.more.map(p=>`<p>${p}</p>`).join("");
+  $("#sheetSrc").innerHTML=`Source : <a href="${n.url}" target="_blank" rel="noopener">${n.src}</a>`;
+  $("#sheet").classList.add("open");$("#sheetBg").classList.add("open");$("#sheet").scrollTop=0;$("#sheetClose").focus();
+}
+function closeSheet(){$("#sheet").classList.remove("open");$("#sheetBg").classList.remove("open")}
+$("#sheetBg").onclick=closeSheet;$("#sheetClose").onclick=closeSheet;
+addEventListener("keydown",e=>{if(e.key==="Escape")closeSheet()});
+
+function updateProgress(i){ const n=list().length; $("#progress").textContent = n? `${Math.min(i+1,n)} / ${n}` : ""; }
+
+/* ---------- scènes animées (quand il n'y a pas de photo) ---------- */
+const running=new Map();
+let io=null;
+function makeIO(){
+  io=new IntersectionObserver(es=>{
+    es.forEach(en=>{
+      const card=en.target;
+      if(en.isIntersecting && en.intersectionRatio>.5){start(card);updateProgress(+card.dataset.i)}
+      else stop(card);
+    });
+  },{root:feed,threshold:[0,.5,.9]});
+}
+function observe(card){ if(!io) makeIO(); io.observe(card); paint(card,0) }
+function stopAll(){ running.forEach((_,c)=>stop(c)); if(io){io.disconnect(); io=null} }
+function stop(card){const r=running.get(card);if(r){cancelAnimationFrame(r);running.delete(card)}}
+function start(card){
+  if(running.has(card) || card.classList.contains("has-photo")) return;
+  const t0=performance.now()-Math.random()*4000;
+  const loop=t=>{paint(card,(t-t0)/1000); running.set(card,requestAnimationFrame(loop))};
+  if(reduce){paint(card,2);return}
+  running.set(card,requestAnimationFrame(loop));
+}
+function seedOf(s){let h=7;for(const ch of s)h=(h*31+ch.charCodeAt(0))%100000;return h}
+function rnd(seed){let s=seed*9301+49297;return()=> (s=(s*9301+49297)%233280)/233280}
+function paint(card,t){
+  const cv=card.querySelector("canvas"); const dpr=Math.min(devicePixelRatio||1,2);
+  const w=cv.clientWidth,h=cv.clientHeight; if(!w) return;
+  if(cv.width!==Math.round(w*dpr)){cv.width=Math.round(w*dpr);cv.height=Math.round(h*dpr)}
+  const x=cv.getContext("2d"); x.setTransform(dpr,0,0,dpr,0,0);
+  const n=byId.get(card.dataset.id), c=CATS[n.cat]||CATS.societe, R=rnd(seedOf(n.id));
+  x.fillStyle=c.c0; x.fillRect(0,0,w,h);
+  const gx=w*(.5+.18*Math.sin(t*.25)), gy=h*(.36+.05*Math.cos(t*.3));
+  const g=x.createRadialGradient(gx,gy,0,gx,gy,Math.max(w,h)*.7);
+  g.addColorStop(0,c.c1); g.addColorStop(.45,c.c1+"55"); g.addColorStop(1,c.c0+"00");
+  x.fillStyle=g; x.fillRect(0,0,w,h);
+  x.save();
+  ({
+    fireflies(){ for(let i=0;i<46;i++){const bx=R()*w,by=R()*h*.8,sp=.3+R(),r=1+R()*2.6;
+      const px=bx+Math.sin(t*sp+i)*24, py=by+Math.cos(t*sp*.8+i)*18, a=.35+.65*Math.abs(Math.sin(t*sp*1.6+i));
+      x.globalAlpha=a; x.fillStyle=c.c2; x.shadowColor=c.c2; x.shadowBlur=12; x.beginPath(); x.arc(px,py,r,0,7); x.fill()} },
+    waves(){ for(let k=0;k<7;k++){ x.beginPath(); const base=h*(.18+k*.11), amp=10+k*3, f=.012-k*.0009;
+      for(let px=0;px<=w;px+=6){x.lineTo(px,base+Math.sin(px*f+t*(.6+k*.12)+k)*amp)}
+      x.strokeStyle=c.c2; x.globalAlpha=.12+k*.05; x.lineWidth=1.4; x.stroke()} },
+    hills(){ x.globalAlpha=.9; for(let k=0;k<4;k++){ x.beginPath(); x.moveTo(0,h); const base=h*(.5+k*.1);
+      for(let px=0;px<=w;px+=8){x.lineTo(px,base+Math.sin(px*.006+k*1.7+t*.08)*30*(1+k*.2))}
+      x.lineTo(w,h); x.closePath(); x.fillStyle=k%2?c.c1+"40":c.c2+"22"; x.fill()}
+      for(let i=0;i<24;i++){const px=R()*w, py=(R()*h*.6+t*12*(.4+R()))%(h*.7); x.globalAlpha=.5; x.fillStyle=c.c2; x.fillRect(px,py,2,2)} },
+    network(){ const P=[]; for(let i=0;i<34;i++){P.push([R()*w+Math.sin(t*.4+i)*16, R()*h*.85+Math.cos(t*.35+i)*16])}
+      x.strokeStyle=c.c2; x.lineWidth=.8;
+      for(let i=0;i<P.length;i++)for(let j=i+1;j<P.length;j++){const d=Math.hypot(P[i][0]-P[j][0],P[i][1]-P[j][1]); if(d<w*.26){x.globalAlpha=(1-d/(w*.26))*.45; x.beginPath(); x.moveTo(...P[i]); x.lineTo(...P[j]); x.stroke()}}
+      x.globalAlpha=.9; x.fillStyle=c.c2; P.forEach(p=>{x.beginPath();x.arc(p[0],p[1],2.2,0,7);x.fill()}) },
+    cells(){ const cx=w*.5, cy=h*.38; for(let k=0;k<6;k++){ const r=((t*22+k*48)%290)+20; x.globalAlpha=Math.max(0,1-r/310)*.6;
+      x.strokeStyle=c.c2; x.lineWidth=1.5; x.beginPath(); x.arc(cx,cy,r,0,7); x.stroke()}
+      for(let i=0;i<18;i++){const a=R()*7+t*.1*(R()-.5), d=60+R()*w*.5; x.globalAlpha=.25; x.fillStyle=c.c2; x.beginPath(); x.arc(cx+Math.cos(a)*d,cy+Math.sin(a)*d,3+R()*8,0,7); x.fill()} },
+    sun(){ const cx=w*.5, cy=h*.38; x.translate(cx,cy); x.rotate(t*.05);
+      for(let i=0;i<36;i++){x.rotate(Math.PI*2/36); x.globalAlpha=.10+.1*Math.sin(t+i); x.fillStyle=c.c2; x.fillRect(70,-1.5,Math.max(w,h),3)} }
+  })[c.scene]();
+  x.restore();
+}
+
+setStatus();
+render();          // affiche tout de suite les essentiels…
+loadDaily();       // …puis les infos du jour dès qu'elles sont chargées
+addEventListener("resize",()=>feed.querySelectorAll(".card:not(.end)").forEach(c=>paint(c,1)));
+document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible" && UPDATED && Date.now()-Date.parse(UPDATED)>20*36e5) loadDaily(); });
+if("serviceWorker" in navigator && location.protocol==="https:") navigator.serviceWorker.register("sw.js").catch(()=>{});
+</script>
+</body>
+</html>

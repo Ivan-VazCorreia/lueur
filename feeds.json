@@ -1,0 +1,8 @@
+[
+  { "name": "Positivr", "lang": "fr", "url": "https://positivr.fr/feed/", "skipCategories": ["Pratique", "Bons plans", "Jeux", "Quiz", "Test"] },
+  { "name": "Good News Network", "lang": "en", "url": "https://www.goodnewsnetwork.org/feed/" },
+  { "name": "Positive News", "lang": "en", "url": "https://www.positive.news/feed/" },
+  { "name": "Reasons to be Cheerful", "lang": "en", "url": "https://reasonstobecheerful.world/feed/" },
+  { "name": "The Optimist Daily", "lang": "en", "url": "https://www.optimistdaily.com/feed/", "skipCategories": ["Recipes", "Recipe"] },
+  { "name": "Good Good Good", "lang": "en", "url": "https://www.goodgoodgood.co/articles/rss.xml" }
+]
